@@ -1,0 +1,27 @@
+# SCN Training Pipeline — Windows / VSCode Requirements
+#
+# Install all at once:
+#   pip install -r requirements.txt
+#
+# For CUDA (GPU) support, install PyTorch first from https://pytorch.org/get-started/locally/
+# Example for CUDA 12.1:
+#   pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+
+# Deep learning
+torch>=2.0.0
+torchvision>=0.15.0
+
+# Silhouette extraction — YOLOv8 (replaces detectron2, works on Windows)
+ultralytics>=8.0.0
+
+# Computer vision
+opencv-python>=4.7.0
+
+# Scientific computing
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-learn>=1.2.0
+
+# Training utilities
+tqdm>=4.65.0
+tensorboard>=2.13.0
