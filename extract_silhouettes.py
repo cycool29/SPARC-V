@@ -12,8 +12,8 @@ YOLOv8 automatically downloads the model weights on first run.
 
 Usage:
     python extract_silhouettes.py ^
-        --video_dir  data/HMDB/videos ^
-        --output_dir data/HMDB/silhouettes ^
+        --video_dir  data/videos ^
+        --output_dir data/silhouettes ^
         --device     cuda
 
 Output structure:
@@ -250,9 +250,30 @@ def process_dataset(
     output_dir = Path(output_dir)
     video_exts = {".avi", ".mp4", ".mov", ".mkv", ".wmv"}
 
-    class_dirs   = sorted([d for d in video_dir.iterdir() if d.is_dir()])
-    class_to_idx = {c.name: i for i, c in enumerate(class_dirs)}
-    n_classes    = len(class_dirs)
+    root_dirs = sorted([d for d in video_dir.iterdir() if d.is_dir()])
+    video_exts = {".avi", ".mp4", ".mov", ".mkv", ".wmv"}
+
+    # Supports either:
+    # 1) video_dir/<class>/<video>
+    # 2) video_dir/<split>/<class>/<video>
+    split_layout = any(
+        any(grandchild.is_dir() for grandchild in child.iterdir()) and
+        not any(f.is_file() and f.suffix.lower() in video_exts for f in child.iterdir())
+        for child in root_dirs
+    )
+
+    groups = []
+    if split_layout:
+        for split_dir in root_dirs:
+            for class_dir in sorted([d for d in split_dir.iterdir() if d.is_dir()]):
+                groups.append((split_dir.name, class_dir))
+    else:
+        for class_dir in root_dirs:
+            groups.append((None, class_dir))
+
+    class_names = sorted({class_dir.name for _, class_dir in groups})
+    class_to_idx = {name: i for i, name in enumerate(class_names)}
+    n_classes = len(class_names)
 
     print(f"\nFound {n_classes} action classes in: {video_dir}")
     print(f"Output -> {output_dir}\n")
@@ -263,17 +284,21 @@ def process_dataset(
 
     total_videos = 0
 
-    for class_dir in class_dirs:
+    for split_name, class_dir in groups:
         label  = class_to_idx[class_dir.name]
         videos = sorted([
             f for f in class_dir.iterdir()
             if f.suffix.lower() in video_exts
         ])
 
-        print(f"[{label+1:03d}/{n_classes}]  {class_dir.name}  ({len(videos)} videos)")
+        prefix = f"{split_name}/" if split_name else ""
+        print(f"[{label+1:03d}/{n_classes}]  {prefix}{class_dir.name}  ({len(videos)} videos)")
 
         for video_path in videos:
-            rel_out = output_dir / class_dir.name / video_path.stem
+            if split_name:
+                rel_out = output_dir / split_name / class_dir.name / video_path.stem
+            else:
+                rel_out = output_dir / class_dir.name / video_path.stem
 
             if rel_out.exists() and any(rel_out.glob("frame_*.npy")):
                 print(f"  [skip] {video_path.name}")

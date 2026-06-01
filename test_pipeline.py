@@ -203,10 +203,11 @@ def run_smoke_test():
     print("=" * 60)
     print("""
 Next steps:
-  1. python extract_silhouettes.py --video_dir data/HMDB/videos --output_dir data/HMDB/silhouettes
-  2. python build_point_clouds.py  --silhouette_dir data/HMDB/silhouettes --output_dir data/HMDB/point_clouds
-  3. python train.py --dataset HMDB --data_dir data/HMDB/point_clouds --n_classes 51 --epochs 100
-  4. python evaluate.py --data_dir data/HMDB/point_clouds --checkpoint checkpoints/scn/best_model.pth --n_classes 51
+    1. python preprocess_videos.py --input_dir data/raw_videos --output_dir data/videos
+    2. python extract_silhouettes.py --video_dir data/videos --output_dir data/silhouettes
+    3. python build_point_clouds.py  --silhouette_dir data/silhouettes --output_dir data/point_clouds
+    4. python train.py --dataset HMDB --data_dir data/point_clouds --n_classes 2 --epochs 100
+    5. python evaluate.py --data_dir data/point_clouds --checkpoint checkpoints/scn/best_model.pth --n_classes 2
 """)
 
 

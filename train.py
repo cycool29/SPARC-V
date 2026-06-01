@@ -14,13 +14,13 @@ Implements the training setup from Section 4.2:
 Usage:
     python train.py \
         --dataset HMDB \
-        --data_dir data/HMDB/point_clouds \
-        --train_split splits/train_split1.txt \
-        --test_split  splits/test_split1.txt \
-        --n_classes 51 \
+    --data_dir data/point_clouds \
+    --train_split checkpoints/scn/splits/train_split1.txt \
+    --test_split  checkpoints/scn/splits/test_split1.txt \
+    --n_classes 2 \
         --epochs 100 \
         --batch_size 64 \
-        --output_dir checkpoints/hmdb_split1
+    --output_dir checkpoints/scn
 """
 
 import argparse

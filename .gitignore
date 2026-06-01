@@ -30,4 +30,4 @@ point_clouds/
 *.tensorrt
 *.bak
 *.tmp
-datasets/
+data/

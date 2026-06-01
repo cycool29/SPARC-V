@@ -14,8 +14,8 @@ Paper Section 3.1:
 
 Usage:
     python build_point_clouds.py \
-        --silhouette_dir data/HMDB/silhouettes \
-        --output_dir     data/HMDB/point_clouds \
+    --silhouette_dir data/silhouettes \
+    --output_dir     data/point_clouds \
         --n_points       4096
 """
 
@@ -150,22 +150,45 @@ def process_dataset(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    class_dirs = sorted([d for d in sil_dir.iterdir() if d.is_dir()])
-    class_to_idx = {c.name: i for i, c in enumerate(class_dirs)}
+    root_dirs = sorted([d for d in sil_dir.iterdir() if d.is_dir()])
+
+    # Supports either:
+    # 1) silhouette_dir/<class>/<video>/frame_*.npy
+    # 2) silhouette_dir/<split>/<class>/<video>/frame_*.npy
+    split_layout = any(
+        any(grandchild.is_dir() for grandchild in child.iterdir()) and
+        not any(video_dir.is_dir() and any(video_dir.glob("frame_*.npy")) for video_dir in child.iterdir())
+        for child in root_dirs
+    )
+
+    groups = []
+    if split_layout:
+        for split_dir in root_dirs:
+            for class_dir in sorted([d for d in split_dir.iterdir() if d.is_dir()]):
+                groups.append((split_dir.name, class_dir))
+    else:
+        for class_dir in root_dirs:
+            groups.append((None, class_dir))
+
+    class_names = sorted({class_dir.name for _, class_dir in groups})
+    class_to_idx = {name: i for i, name in enumerate(class_names)}
 
     # Save class mapping
     with open(out_dir / "class_map.json", "w") as f:
         json.dump(class_to_idx, f, indent=2)
 
-    print(f"Building point clouds for {len(class_dirs)} classes → {out_dir}")
+    print(f"Building point clouds for {len(class_names)} classes → {out_dir}")
 
     total = 0
-    for class_dir in class_dirs:
+    for split_name, class_dir in groups:
         label = class_to_idx[class_dir.name]
         video_dirs = sorted([d for d in class_dir.iterdir() if d.is_dir()])
 
         for video_dir in video_dirs:
-            out_path = out_dir / class_dir.name / f"{video_dir.name}.npz"
+            if split_name:
+                out_path = out_dir / split_name / class_dir.name / f"{video_dir.name}.npz"
+            else:
+                out_path = out_dir / class_dir.name / f"{video_dir.name}.npz"
             if out_path.exists():
                 print(f"  [SKIP] {out_path.name}")
                 continue
@@ -179,7 +202,8 @@ def process_dataset(
                 continue
 
             frame_files = [str(f) for f in frame_files]
-            print(f"  [{class_dir.name}] {video_dir.name}: {len(frame_files)} frames → ", end="")
+            prefix = f"{split_name}/" if split_name else ""
+            print(f"  [{prefix}{class_dir.name}] {video_dir.name}: {len(frame_files)} frames → ", end="")
 
             if slow_to_fast:
                 samples = build_slow_to_fast_samples(

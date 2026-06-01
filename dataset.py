@@ -251,21 +251,34 @@ def generate_split_files(
     with open(data_dir / "class_map.json") as f:
         class_to_idx = json.load(f)
 
-    all_samples = []
-    for class_name, label in class_to_idx.items():
-        class_dir = data_dir / class_name
-        if not class_dir.exists():
-            continue
-        for npz_file in sorted(class_dir.glob("*.npz")):
-            rel = f"{class_name}/{npz_file.stem}"
-            all_samples.append((rel, label))
+    def _collect_samples(prefix: Optional[str] = None):
+        samples = []
+        for class_name, label in class_to_idx.items():
+            base_dir = data_dir / class_name if prefix is None else data_dir / prefix / class_name
+            if not base_dir.exists():
+                continue
+            for npz_file in sorted(base_dir.glob("*.npz")):
+                if prefix is None:
+                    rel = f"{class_name}/{npz_file.stem}"
+                else:
+                    rel = f"{prefix}/{class_name}/{npz_file.stem}"
+                samples.append((rel, label))
+        return samples
 
-    random.seed(seed)
-    random.shuffle(all_samples)
+    train_dir = data_dir / "train"
+    val_dir = data_dir / "val"
 
-    split_idx = int(len(all_samples) * (1 - val_ratio))
-    train_samples = all_samples[:split_idx]
-    test_samples  = all_samples[split_idx:]
+    if train_dir.exists() and val_dir.exists():
+        train_samples = _collect_samples("train")
+        test_samples = _collect_samples("val")
+        print("Detected train/val directory layout; using it directly for splits.")
+    else:
+        all_samples = _collect_samples(prefix=None)
+        random.seed(seed)
+        random.shuffle(all_samples)
+        split_idx = int(len(all_samples) * (1 - val_ratio))
+        train_samples = all_samples[:split_idx]
+        test_samples  = all_samples[split_idx:]
 
     train_file = output_dir / "train_split1.txt"
     test_file  = output_dir / "test_split1.txt"

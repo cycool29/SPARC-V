@@ -11,17 +11,17 @@ Reproduces the evaluation protocol from Section 4.1:
 Usage:
     # Single split evaluation
     python evaluate.py \
-        --data_dir  data/HMDB/point_clouds \
-        --split     splits/test_split1.txt \
-        --checkpoint checkpoints/hmdb_split1/best_model.pth \
-        --n_classes 51
+        --data_dir  data/point_clouds \
+        --split     checkpoints/scn/splits/test_split1.txt \
+        --checkpoint checkpoints/scn/best_model.pth \
+        --n_classes 2
 
     # All 3 splits (paper protocol)
     python evaluate.py \
-        --data_dir  data/HMDB/point_clouds \
-        --splits    splits/test_split1.txt splits/test_split2.txt splits/test_split3.txt \
+        --data_dir  data/point_clouds \
+        --splits    split1.txt split2.txt split3.txt \
         --checkpoints checkpoints/s1/best.pth checkpoints/s2/best.pth checkpoints/s3/best.pth \
-        --n_classes 51
+        --n_classes 2
 """
 
 import argparse
