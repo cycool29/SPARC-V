@@ -103,7 +103,7 @@ def farthest_point_sampling_torch(points: 'torch.Tensor', n_samples: int) -> 'to
 # K-Nearest Neighbours (for local neighbourhood extraction)
 # ---------------------------------------------------------------------------
 
-def knn_query(query_pts: 'torch.Tensor', support_pts: 'torch.Tensor', k: int) -> 'torch.Tensor':  # type: ignore
+def knn_query(query_pts: 'torch.Tensor', support_pts: 'torch.Tensor', k: int, chunk_size: int = 128) -> 'torch.Tensor':  # type: ignore
     """
     For each query point, find the k nearest neighbours in support_pts.
 
@@ -115,11 +115,20 @@ def knn_query(query_pts: 'torch.Tensor', support_pts: 'torch.Tensor', k: int) ->
     Returns:
         idx: (B, M, k) indices into support_pts
     """
-    # Pairwise squared distances: (B, M, N)
-    diff = query_pts.unsqueeze(2) - support_pts.unsqueeze(1)  # (B, M, N, 3)
-    dist2 = torch.sum(diff ** 2, dim=-1)                       # (B, M, N)  # type: ignore
-    _, idx = torch.topk(dist2, k, dim=-1, largest=False)       # (B, M, k)  # type: ignore
-    return idx
+    # Chunked distance computation avoids allocating a full (B, M, N, 3) tensor.
+    B, M, _ = query_pts.shape
+    indices = []
+    support_pts_t = support_pts.transpose(1, 2)  # (B, 3, N)
+
+    for start in range(0, M, chunk_size):
+        end = min(start + chunk_size, M)
+        chunk = query_pts[:, start:end, :]  # (B, C, 3)
+        # torch.cdist is chunked here so peak memory stays bounded by chunk_size.
+        dist2 = torch.cdist(chunk, support_pts, p=2) ** 2
+        _, idx = torch.topk(dist2, k, dim=-1, largest=False)
+        indices.append(idx)
+
+    return torch.cat(indices, dim=1)
 
 
 # ---------------------------------------------------------------------------

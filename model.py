@@ -87,6 +87,13 @@ class DilatedSilhouetteConv(nn.Module):
         dilated[..., 2] = dilated[..., 2] * self.dilation  # scale z relative offsets
         return dilated
 
+    @staticmethod
+    def _gather_neighbors(values: torch.Tensor, indices: torch.Tensor) -> torch.Tensor:
+        """Gather per-batch neighbors without expanding to a full B×N×N tensor."""
+        batch_indices = torch.arange(values.shape[0], device=values.device).view(-1, 1, 1)
+        batch_indices = batch_indices.expand_as(indices)
+        return values[batch_indices, indices]
+
     def forward(
         self,
         xyz: torch.Tensor,          # (B, N, 3) — centroid coordinates
@@ -105,18 +112,14 @@ class DilatedSilhouetteConv(nn.Module):
         # 2. Gather neighbour coordinates and compute local (relative) coords
         #    centroid shape: (B, N, 1, 3)
         centroid = xyz.unsqueeze(2)
-        idx_exp  = knn_idx.unsqueeze(-1).expand(B, N, self.k, 3)
-        nbr_xyz  = torch.gather(xyz.unsqueeze(1).expand(B, N, N, 3), 2, idx_exp)
+        nbr_xyz  = self._gather_neighbors(xyz, knn_idx)
         local_xyz = nbr_xyz - centroid                  # (B, N, k, 3)
 
         # 3. Apply temporal dilation to z offsets
         local_xyz = self._apply_temporal_dilation(local_xyz)
 
         # 4. Gather neighbour features
-        idx_feat = knn_idx.unsqueeze(-1).expand(B, N, self.k, features.shape[-1])
-        nbr_feat = torch.gather(
-            features.unsqueeze(1).expand(B, N, N, features.shape[-1]), 2, idx_feat
-        )                                               # (B, N, k, C_in)
+        nbr_feat = self._gather_neighbors(features, knn_idx)  # (B, N, k, C_in)
 
         # 5. Concatenate coords + features for Branch a
         coord_input = torch.cat([local_xyz, nbr_feat], dim=-1)  # (B, N, k, 3+C_in)
@@ -126,10 +129,7 @@ class DilatedSilhouetteConv(nn.Module):
         W = self.coord_mlp(coord_input)                # (B, C_out, N, k)
 
         # 6. Gather density values for Branch b
-        idx_d   = knn_idx.unsqueeze(-1)               # (B, N, k, 1)
-        nbr_d   = torch.gather(
-            density.unsqueeze(1).unsqueeze(-1).expand(B, N, N, 1), 2, idx_d
-        )                                              # (B, N, k, 1)
+        nbr_d   = self._gather_neighbors(density.unsqueeze(-1), knn_idx)  # (B, N, k, 1)
         density_input = nbr_d.permute(0, 3, 1, 2)    # (B, 1, N, k)
 
         S = self.density_mlp(density_input)            # (B, C_out, N, k)

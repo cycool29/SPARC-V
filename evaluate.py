@@ -47,6 +47,7 @@ def evaluate_split(
     loader: DataLoader,
     device: torch.device,
     class_names: list = None,
+    micro_batch_size: int = 8,
 ) -> dict:
     """
     Compute overall accuracy, mean per-class accuracy, and per-class breakdown.
@@ -55,14 +56,25 @@ def evaluate_split(
     all_preds  = []
     all_labels = []
 
+    def _iter_micro_batches(batch: dict):
+        batch_size = batch["label"].shape[0]
+        step = max(1, int(micro_batch_size))
+        for start in range(0, batch_size, step):
+            end = min(start + step, batch_size)
+            yield {
+                k: (v[start:end] if isinstance(v, torch.Tensor) else v)
+                for k, v in batch.items()
+            }
+
     for batch in loader:
-        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v
-                 for k, v in batch.items()}
-        labels = batch["label"]
-        logits = model(batch)
-        preds  = logits.argmax(dim=-1)
-        all_preds.extend(preds.cpu().numpy().tolist())
-        all_labels.extend(labels.cpu().numpy().tolist())
+        for micro_batch in _iter_micro_batches(batch):
+            micro_batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+                           for k, v in micro_batch.items()}
+            labels = micro_batch["label"]
+            logits = model(micro_batch)
+            preds  = logits.argmax(dim=-1)
+            all_preds.extend(preds.cpu().numpy().tolist())
+            all_labels.extend(labels.cpu().numpy().tolist())
 
     all_preds  = np.array(all_preds)
     all_labels = np.array(all_labels)
@@ -97,19 +109,31 @@ def compute_confusion_matrix(
     loader: DataLoader,
     device: torch.device,
     n_classes: int,
+    micro_batch_size: int = 8,
 ) -> np.ndarray:
     model.eval()
     cm = np.zeros((n_classes, n_classes), dtype=int)
 
+    def _iter_micro_batches(batch: dict):
+        batch_size = batch["label"].shape[0]
+        step = max(1, int(micro_batch_size))
+        for start in range(0, batch_size, step):
+            end = min(start + step, batch_size)
+            yield {
+                k: (v[start:end] if isinstance(v, torch.Tensor) else v)
+                for k, v in batch.items()
+            }
+
     with torch.no_grad():
         for batch in loader:
-            batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v
-                     for k, v in batch.items()}
-            labels = batch["label"].cpu().numpy()
-            preds  = model(batch).argmax(dim=-1).cpu().numpy()
-            for true, pred in zip(labels, preds):
-                if 0 <= true < n_classes and 0 <= pred < n_classes:
-                    cm[true, pred] += 1
+            for micro_batch in _iter_micro_batches(batch):
+                micro_batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+                               for k, v in micro_batch.items()}
+                labels = micro_batch["label"].cpu().numpy()
+                preds  = model(micro_batch).argmax(dim=-1).cpu().numpy()
+                for true, pred in zip(labels, preds):
+                    if 0 <= true < n_classes and 0 <= pred < n_classes:
+                        cm[true, pred] += 1
 
     return cm
 
@@ -126,6 +150,7 @@ def evaluate_three_splits(
     slow_to_fast: bool,
     n_points: int,
     batch_size: int,
+    micro_batch_size: int,
     device: torch.device,
     class_names: list = None,
 ) -> dict:
@@ -155,7 +180,7 @@ def evaluate_three_splits(
         ckpt  = torch.load(ckpt_file, map_location=device)
         model.load_state_dict(ckpt["model"])
 
-        result = evaluate_split(model, loader, device, class_names)
+        result = evaluate_split(model, loader, device, class_names, micro_batch_size=micro_batch_size)
         split_results.append(result)
 
         print(f"  Overall accuracy:    {result['overall_accuracy']:.2f}%")
@@ -189,6 +214,8 @@ def parse_args():
     p.add_argument("--n_classes",   type=int, required=True)
     p.add_argument("--n_points",    type=int, default=4096)
     p.add_argument("--batch_size",  type=int, default=64)
+    p.add_argument("--micro_batch_size", type=int, default=8,
+                   help="Sub-batch size used inside each loaded batch to reduce GPU memory")
     p.add_argument("--device",      default="cuda")
     p.add_argument("--no_slow_to_fast", action="store_true")
 
@@ -238,6 +265,7 @@ if __name__ == "__main__":
             slow_to_fast=slow_to_fast,
             n_points=args.n_points,
             batch_size=args.batch_size,
+            micro_batch_size=args.micro_batch_size,
             device=device,
             class_names=class_names,
         )
@@ -260,7 +288,7 @@ if __name__ == "__main__":
         ckpt  = torch.load(args.checkpoint, map_location=device)
         model.load_state_dict(ckpt["model"])
 
-        results = evaluate_split(model, loader, device, class_names)
+        results = evaluate_split(model, loader, device, class_names, micro_batch_size=args.micro_batch_size)
 
         print(f"\nResults on {args.split}:")
         print(f"  Overall accuracy:    {results['overall_accuracy']:.2f}%")

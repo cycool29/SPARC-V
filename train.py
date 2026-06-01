@@ -91,6 +91,7 @@ def train_one_epoch(
     criterion: nn.Module,
     device: torch.device,
     slow_to_fast: bool,
+    micro_batch_size: int,
     epoch: int,
 ) -> dict:
     model.train()
@@ -99,27 +100,49 @@ def train_one_epoch(
     total_samples = 0
     t0 = time.time()
 
+    def _iter_micro_batches(batch: dict):
+        batch_size = batch["label"].shape[0]
+        step = max(1, int(micro_batch_size))
+        for start in range(0, batch_size, step):
+            end = min(start + step, batch_size)
+            yield {
+                k: (v[start:end] if isinstance(v, torch.Tensor) else v)
+                for k, v in batch.items()
+            }
+
     for batch_idx, batch in enumerate(loader):
-        # Move tensors to device
-        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v
-                 for k, v in batch.items()}
-
-        labels = batch["label"]
-
         optimizer.zero_grad()
-        logits = model(batch)
-        loss   = criterion(logits, labels)
-        loss.backward()
+
+        batch_samples = batch["label"].shape[0]
+        micro_loss_sum = 0.0
+        preds_all = []
+        labels_all = []
+
+        for micro_batch in _iter_micro_batches(batch):
+            micro_batch = {
+                k: v.to(device) if isinstance(v, torch.Tensor) else v
+                for k, v in micro_batch.items()
+            }
+            labels = micro_batch["label"]
+
+            logits = model(micro_batch)
+            loss = criterion(logits, labels)
+            scaled_loss = loss * (labels.size(0) / batch_samples)
+            scaled_loss.backward()
+            micro_loss_sum += loss.item() * labels.size(0)
+            preds_all.append(logits.argmax(dim=-1).detach())
+            labels_all.append(labels.detach())
 
         # Gradient clipping (optional but helpful for stability)
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=10.0)
         optimizer.step()
 
-        preds   = logits.argmax(dim=-1)
+        labels = torch.cat(labels_all, dim=0)
+        preds = torch.cat(preds_all, dim=0)
         correct = (preds == labels).sum().item()
-        bs      = labels.size(0)
+        bs = labels.size(0)
 
-        total_loss    += loss.item() * bs
+        total_loss    += micro_loss_sum
         total_correct += correct
         total_samples += bs
 
@@ -148,6 +171,7 @@ def evaluate(
     loader,
     criterion: nn.Module,
     device: torch.device,
+    micro_batch_size: int,
 ) -> dict:
     model.eval()
     total_loss    = 0.0
@@ -158,24 +182,41 @@ def evaluate(
     class_correct = {}
     class_total   = {}
 
+    def _iter_micro_batches(batch: dict):
+        batch_size = batch["label"].shape[0]
+        step = max(1, int(micro_batch_size))
+        for start in range(0, batch_size, step):
+            end = min(start + step, batch_size)
+            yield {
+                k: (v[start:end] if isinstance(v, torch.Tensor) else v)
+                for k, v in batch.items()
+            }
+
     for batch in loader:
-        batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v
-                 for k, v in batch.items()}
-        labels = batch["label"]
+        batch_loss = 0.0
+        batch_total = 0
 
-        logits = model(batch)
-        loss   = criterion(logits, labels)
-        preds  = logits.argmax(dim=-1)
+        for micro_batch in _iter_micro_batches(batch):
+            micro_batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v
+                           for k, v in micro_batch.items()}
+            labels = micro_batch["label"]
 
-        correct = (preds == labels)
-        total_loss    += loss.item() * labels.size(0)
-        total_correct += correct.sum().item()
-        total_samples += labels.size(0)
+            logits = model(micro_batch)
+            loss   = criterion(logits, labels)
+            preds  = logits.argmax(dim=-1)
+            correct = (preds == labels)
 
-        # Per-class accumulation
-        for c, p in zip(labels.cpu().numpy(), correct.cpu().numpy()):
-            class_correct[c] = class_correct.get(c, 0) + int(p)
-            class_total[c]   = class_total.get(c, 0) + 1
+            batch_loss += loss.item() * labels.size(0)
+            batch_total += labels.size(0)
+            total_correct += correct.sum().item()
+            total_samples += labels.size(0)
+
+            # Per-class accumulation
+            for c, p in zip(labels.cpu().numpy(), correct.cpu().numpy()):
+                class_correct[c] = class_correct.get(c, 0) + int(p)
+                class_total[c]   = class_total.get(c, 0) + 1
+
+        total_loss += batch_loss
 
     # Mean per-class accuracy (as used in the paper)
     per_class_acc = [
@@ -282,12 +323,13 @@ def train(args):
         train_stats = train_one_epoch(
             model, train_loader, optimizer, criterion, device,
             slow_to_fast=not args.no_slow_to_fast,
+            micro_batch_size=args.micro_batch_size,
             epoch=epoch + 1,
         )
 
         # Evaluate every `eval_freq` epochs
         if (epoch + 1) % args.eval_freq == 0 or epoch == args.epochs - 1:
-            val_stats = evaluate(model, test_loader, criterion, device)
+            val_stats = evaluate(model, test_loader, criterion, device, args.micro_batch_size)
         else:
             val_stats = {"loss": float("nan"), "accuracy": float("nan"), "mean_class_acc": float("nan")}
 
@@ -382,6 +424,8 @@ def parse_args():
     p.add_argument("--eval_freq",   type=int,   default=5,
                    help="Evaluate every N epochs")
     p.add_argument("--num_workers", type=int,   default=4)
+    p.add_argument("--micro_batch_size", type=int, default=8,
+                   help="Sub-batch size used inside each loaded batch to reduce GPU memory")
 
     # I/O
     p.add_argument("--output_dir",  default="checkpoints/scn",
