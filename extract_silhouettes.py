@@ -215,6 +215,7 @@ def extract_video_silhouettes(
             if boundary.shape[0] > 0:
                 out_path = os.path.join(output_dir, f"frame_{n_saved:04d}.npy")
                 np.save(out_path, boundary)
+
                 n_saved += 1
 
         frame_idx += 1
@@ -306,7 +307,10 @@ def process_dataset(
 
             print(f"  {video_path.name}")
             n_frames = extract_video_silhouettes(
-                str(video_path), str(rel_out), extractor, max_frames=max_frames,
+                str(video_path),
+                str(rel_out),
+                extractor,
+                max_frames=max_frames,
             )
 
             meta = {
