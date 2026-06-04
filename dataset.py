@@ -218,6 +218,8 @@ def get_dataloaders(
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
+        prefetch_factor=4,
+        persistent_workers=True,
     )
     test_loader = DataLoader(
         test_ds,
@@ -225,6 +227,8 @@ def get_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
+        prefetch_factor=4,
+        persistent_workers=True,
     )
     return train_loader, test_loader
 

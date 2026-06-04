@@ -3,7 +3,7 @@ from pathlib import Path
 from collections import defaultdict
 
 root = Path("data/raw_videos")
-for class_dir in (root / "train").iterdir():
+for class_dir in (root / "val").iterdir():
     if not class_dir.is_dir(): 
         continue
     counter = 1

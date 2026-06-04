@@ -55,11 +55,15 @@ class DilatedSilhouetteConv(nn.Module):
         self.k        = k
         self.dilation = dilation
 
+        # Dynamic Group Setup: Ensures stability with micro-batching without crashing 
+        # if out_channels isn't divisible by 8 (standard base_channels=128 fits perfectly)
+        groups = 8 if out_channels % 8 == 0 else (4 if out_channels % 4 == 0 else 1)
+
         # Branch a: coordinate branch → weight W
         # Input dim: 3 (relative coords) + in_channels (features)
         self.coord_mlp = nn.Sequential(
             nn.Conv2d(3 + in_channels, out_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.GroupNorm(num_groups=groups, num_channels=out_channels), # Robust to micro-batching
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, kernel_size=1, bias=False),
         )
@@ -67,13 +71,14 @@ class DilatedSilhouetteConv(nn.Module):
         # Branch b: density branch → coefficient S
         self.density_mlp = nn.Sequential(
             nn.Conv2d(1, out_channels, kernel_size=1, bias=False),
-            nn.BatchNorm2d(out_channels),
+            nn.GroupNorm(num_groups=groups, num_channels=out_channels), # Robust to micro-batching
             nn.ReLU(inplace=True),
             nn.Conv2d(out_channels, out_channels, kernel_size=1, bias=False),
         )
 
-        self.bn  = nn.BatchNorm1d(out_channels)
-        self.act = nn.ReLU(inplace=True)
+        # Post-fusion normalization layer
+        self.norm = nn.GroupNorm(num_groups=groups, num_channels=out_channels)
+        self.act  = nn.ReLU(inplace=True)
 
     def _apply_temporal_dilation(self, pts: torch.Tensor) -> torch.Tensor:
         """
@@ -123,14 +128,15 @@ class DilatedSilhouetteConv(nn.Module):
 
         # 5. Concatenate coords + features for Branch a
         coord_input = torch.cat([local_xyz, nbr_feat], dim=-1)  # (B, N, k, 3+C_in)
-        # Rearrange to (B, 3+C_in, N, k) for Conv2d
-        coord_input = coord_input.permute(0, 3, 1, 2)
+        # Rearrange and enforce hardware-level memory contiguity for optimized cuDNN kernels
+        coord_input = coord_input.permute(0, 3, 1, 2).contiguous()
 
         W = self.coord_mlp(coord_input)                # (B, C_out, N, k)
 
         # 6. Gather density values for Branch b
         nbr_d   = self._gather_neighbors(density.unsqueeze(-1), knn_idx)  # (B, N, k, 1)
-        density_input = nbr_d.permute(0, 3, 1, 2)    # (B, 1, N, k)
+        # Rearrange and enforce hardware-level memory contiguity
+        density_input = nbr_d.permute(0, 3, 1, 2).contiguous()
 
         S = self.density_mlp(density_input)            # (B, C_out, N, k)
 
@@ -139,7 +145,8 @@ class DilatedSilhouetteConv(nn.Module):
         fused = W * S                                  # (B, C_out, N, k)
         out   = fused.max(dim=-1)[0]                   # (B, C_out, N)
 
-        out = self.bn(out)
+        # Normalization and non-linear activation
+        out = self.norm(out)
         out = self.act(out)
 
         return out.permute(0, 2, 1)                    # (B, N, C_out)
@@ -159,7 +166,7 @@ class SCNEncoder(nn.Module):
       ↓ DilatedSilhouetteConv (dilation 1) + DilatedSilhouetteConv (dilation 2)
       ↓ FPS to N2 centroids
       ↓ DilatedSilhouetteConv (dilation 1) + DilatedSilhouetteConv (dilation 2)
-      ↓ 1×1 Conv + BN + ReLU
+      ↓ 1×1 Conv + GroupNorm + ReLU
       ↓ Global max pool → feature vector of size 1024
     """
 
@@ -188,15 +195,17 @@ class SCNEncoder(nn.Module):
         self.conv2_d2 = DilatedSilhouetteConv(base_channels * 2, base_channels * 2, k=k, dilation=2)
 
         # Final 1×1 conv layer (paper: mlp(256, 512, 1024))
+        # Updated to GroupNorm to maintain mathematical invariant constraints during micro-batch slices
+        groups = 8
         self.final_mlp = nn.Sequential(
             nn.Conv1d(base_channels * 2, 256,  kernel_size=1, bias=False),
-            nn.BatchNorm1d(256),
+            nn.GroupNorm(num_groups=groups, num_channels=256),
             nn.ReLU(inplace=True),
             nn.Conv1d(256, 512, kernel_size=1, bias=False),
-            nn.BatchNorm1d(512),
+            nn.GroupNorm(num_groups=groups, num_channels=512),
             nn.ReLU(inplace=True),
             nn.Conv1d(512, 1024, kernel_size=1, bias=False),
-            nn.BatchNorm1d(1024),
+            nn.GroupNorm(num_groups=groups, num_channels=1024),
             nn.ReLU(inplace=True),
         )
 
@@ -217,9 +226,6 @@ class SCNEncoder(nn.Module):
         # Interpolate density to N1 (use nearest-centroid assignment)
         density1 = self._interpolate_density(pts, density, pts1)   # (B, N1)
 
-        # Initial features are unused by the first block; xyz is reused as a bootstrap feature.
-        feat1 = torch.zeros(B, self.n1, 1, device=pts.device)      # dummy init
-
         # Dilated conv layer 1 — dilation 1
         feat1 = self.conv1_d1(pts1, pts1, density1)                 # (B, N1, 128)
         feat1 = self.conv1_d2(pts1, feat1, density1)                # (B, N1, 128)
@@ -233,7 +239,8 @@ class SCNEncoder(nn.Module):
         feat2 = self.conv2_d2(pts2, feat2, density2)                # (B, N2, 256)
 
         # --- Final 1×1 conv + global max pool ---
-        x = feat2.permute(0, 2, 1)                                  # (B, 256, N2)
+        # Enforce memory contiguity directly after layout permutation to optimize backend execution
+        x = feat2.permute(0, 2, 1).contiguous()                    # (B, 256, N2)
         x = self.final_mlp(x)                                       # (B, 1024, N2)
         x = x.max(dim=-1)[0]                                        # (B, 1024)
         return x
@@ -264,8 +271,7 @@ class SCNEncoder(nn.Module):
         C = src_feat.shape[-1]
         idx_e = nn_idx.unsqueeze(-1).expand(-1, -1, C)
         return torch.gather(src_feat, 1, idx_e)               # (B, N_tgt, C)
-
-
+    
 # ---------------------------------------------------------------------------
 # Slow-to-Fast SCN (Fig. 6 in the paper)
 # ---------------------------------------------------------------------------

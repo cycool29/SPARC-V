@@ -51,10 +51,9 @@ def preview_video(
     frame_indices = set(np.linspace(0, total_frames - 1, sample_count, dtype=int).tolist())
 
     writer = None
+    preview_dir_path = Path(preview_dir) if preview_dir is not None else Path(video_path).parent
     if save_preview:
-        if preview_dir is None:
-            preview_dir = str(Path(video_path).parent)
-        os.makedirs(preview_dir, exist_ok=True)
+        preview_dir_path.mkdir(parents=True, exist_ok=True)
 
     frame_idx = 0
     saved_idx = 0
@@ -80,9 +79,10 @@ def preview_video(
             if save_preview:
                 if writer is None:
                     h, w = vis.shape[:2]
-                    preview_path = os.path.join(preview_dir, Path(video_path).stem + "_preview.mp4")
-                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
-                    writer = cv2.VideoWriter(preview_path, fourcc, output_fps, (w, h))
+                    preview_path = preview_dir_path / f"{Path(video_path).stem}_preview.mp4"
+                    fourcc_fn = getattr(cv2, "VideoWriter_fourcc")
+                    fourcc = fourcc_fn(*"mp4v")
+                    writer = cv2.VideoWriter(str(preview_path), fourcc, output_fps, (w, h))
                 writer.write(vis)
 
             if show:
@@ -106,7 +106,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--video", required=True, help="Path to a single video file")
     parser.add_argument("--model", default="yolov8s-seg.pt",
                         choices=["yolov8n-seg.pt", "yolov8s-seg.pt", "yolov8m-seg.pt", "yolov8x-seg.pt"])
-    parser.add_argument("--confidence", type=float, default=0.5)
+    parser.add_argument("--confidence", type=float, default=0.25,
+                        help="Lower values keep more borderline person detections")
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--boundary_points", type=int, default=128)
     parser.add_argument("--max_frames", type=int, default=250)

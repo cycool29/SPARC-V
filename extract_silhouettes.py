@@ -61,7 +61,7 @@ class YOLOv8SilhouetteExtractor:
     def __init__(
         self,
         model_name: str = "yolov8s-seg.pt",
-        confidence: float = 0.5,
+        confidence: float = 0.25,
         device: str = "cpu",
         boundary_points: int = 128,
     ):
@@ -344,7 +344,8 @@ def parse_args():
                    choices=["yolov8n-seg.pt", "yolov8s-seg.pt",
                             "yolov8m-seg.pt", "yolov8x-seg.pt"],
                    help="YOLOv8 model size (n=fastest, x=most accurate)")
-    p.add_argument("--confidence",  type=float, default=0.5)
+    p.add_argument("--confidence",  type=float, default=0.25,
+                   help="Lower values keep more borderline person detections")
     p.add_argument("--device",      default="cpu",
                    help="cuda or cpu")
     p.add_argument("--max_frames",  type=int, default=250)

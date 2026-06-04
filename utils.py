@@ -93,9 +93,9 @@ def farthest_point_sampling_torch(points: 'torch.Tensor', n_samples: int) -> 'to
         distances = torch.minimum(distances, d)
         selected_idx[:, i] = torch.argmax(distances, dim=-1)
 
-    # Gather selected points
+    # Gather selected points and ensure memory contiguity for subsequent processing stages
     idx_expanded = selected_idx.unsqueeze(-1).expand(B, n_samples, 3)
-    sampled = torch.gather(points, 1, idx_expanded)
+    sampled = torch.gather(points, 1, idx_expanded).contiguous()
     return sampled
 
 
@@ -115,20 +115,20 @@ def knn_query(query_pts: 'torch.Tensor', support_pts: 'torch.Tensor', k: int, ch
     Returns:
         idx: (B, M, k) indices into support_pts
     """
-    # Chunked distance computation avoids allocating a full (B, M, N, 3) tensor.
     B, M, _ = query_pts.shape
     indices = []
-    support_pts_t = support_pts.transpose(1, 2)  # (B, 3, N)
 
     for start in range(0, M, chunk_size):
         end = min(start + chunk_size, M)
-        chunk = query_pts[:, start:end, :]  # (B, C, 3)
-        # torch.cdist is chunked here so peak memory stays bounded by chunk_size.
+        chunk = query_pts[:, start:end, :]  # (B, chunk_size, 3)
+        
+        # torch.cdist bounds peak memory; squared to obtain distance squared values
         dist2 = torch.cdist(chunk, support_pts, p=2) ** 2
         _, idx = torch.topk(dist2, k, dim=-1, largest=False)
         indices.append(idx)
 
-    return torch.cat(indices, dim=1)
+    # Enforce sequence contiguity to prevent indexing slows down the pipeline
+    return torch.cat(indices, dim=1).contiguous()
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +164,7 @@ def compute_density_coefficients_torch(
 ) -> 'torch.Tensor':  # type: ignore
     """
     Batched GPU version of density coefficient computation.
+    Optimized to use cdist to avoid large (B, N, N, 3) tensor allocation explosions.
 
     Args:
         points: (B, N, 3)
@@ -172,11 +173,13 @@ def compute_density_coefficients_torch(
         density_inv: (B, N)
     """
     B, N, _ = points.shape
-    diff = points.unsqueeze(2) - points.unsqueeze(1)  # (B, N, N, 3)
-    dist2 = torch.sum(diff ** 2, dim=-1)               # (B, N, N)  # type: ignore
-    density = torch.sum(torch.exp(-dist2 / (2 * bandwidth ** 2)), dim=-1) / N  # type: ignore
+    
+    # Highly optimized matrix-multiplication based distance computation to mitigate OOMs
+    dist2 = torch.cdist(points, points, p=2) ** 2                                # (B, N, N)
+    density = torch.sum(torch.exp(-dist2 / (2 * bandwidth ** 2)), dim=-1) / N    # (B, N)
     density = density.clamp(min=1e-6)
-    return 1.0 / density
+    
+    return (1.0 / density).contiguous()
 
 
 # ---------------------------------------------------------------------------
